@@ -1,0 +1,59 @@
+# Репетиционный стенд без инфраструктуры: 3 mock-«сервиса» (жертва, команда,
+# NPC) + webui. Полностью повторяет игровой контур тулкита.
+#
+# Запуск (из каталога ad-toolkit/):
+#   cp demo/config.demo.yaml demo/config.yaml
+#   docker compose -f demo/docker-compose.yml up -d --build
+#
+# UI: http://127.0.0.1:57020
+# «Атака»: docker compose -f demo/docker-compose.yml exec attacker python /demo/fake_attacker.py
+#   (или просто python3 demo/fake_attacker.py с хоста — сервисы опубликованы)
+services:
+  victim:
+    image: python:3.12-slim
+    command: python -u /demo/vuln_service.py
+    ports:
+      - "127.0.0.1:18080:18080"
+      - "127.0.0.1:18081:18081"
+    volumes:
+      - ../demo:/demo:ro
+
+  team-1:
+    image: python:3.12-slim
+    command: python -u /demo/vuln_service.py
+    environment:
+      HTTP_PORT: 28080
+      TCP_PORT: 28081
+    ports:
+      - "127.0.0.1:28080:28080"
+      - "127.0.0.1:28081:28081"
+    volumes:
+      - ../demo:/demo:ro
+
+  npc:
+    image: python:3.12-slim
+    command: python -u /demo/vuln_service.py
+    environment:
+      HTTP_PORT: 38080
+      TCP_PORT: 38081
+    ports:
+      - "127.0.0.1:38080:38080"
+      - "127.0.0.1:38081:38081"
+    volumes:
+      - ../demo:/demo:ro
+
+  webui:
+    build: ../laptop
+    image: ad-webui:latest
+    network_mode: host
+    environment:
+      WEB_DRY: "1"                        # репетиция: сабмиттер без отправки
+    command: >
+      python -u web.py
+      --config /app/config.yaml --teams /app/teams.yaml
+      --with-ingest --with-submitter --ingest-dir /app/data/pkappa2-ingest
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./teams.yaml:/app/teams.yaml:ro
+      - ./data:/app/data
+    restart: unless-stopped

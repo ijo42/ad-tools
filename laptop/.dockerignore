@@ -1,0 +1,10 @@
+data/
+pkappa2-ingest/
+pull-state/
+flags.queue.jsonl
+flags_seen.txt
+detections.db*
+config.yaml
+teams.yaml
+__pycache__/
+*.pyc

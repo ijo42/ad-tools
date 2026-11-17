@@ -1,0 +1,12 @@
+# Конфиг репетиционного стенда (demo/docker-compose.yml).
+# Раунды считаются от момента запуска стенда.
+forcad: {base_url: "http://127.0.0.1:5000", team_token: "TEST"}
+flags: {regex: "[A-Z0-9]{31}="}
+submit: {queue_file: "/app/data/flags.queue.jsonl", state_file: "/app/data/flags_seen.txt"}
+analyzer: {checker_ips: []}
+npc_check: {enabled: true}
+game:
+  start: 0          # задайте epoch при реальной репетиции; 0 — всё раунд 0
+  round_len: 60
+  detections_db: "/app/data/detections.db"
+  services: {18080: shop, 18081: proto}

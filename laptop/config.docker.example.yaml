@@ -1,0 +1,35 @@
+# Конфиг для запуска webui в docker compose (laptop/docker-compose.yml).
+# Все пути — внутрь контейнера: том ./data монтируется в /app/data.
+# Скопируйте в config.yaml рядом с docker-compose.yml и заполните.
+
+forcad:
+  base_url: "http://forcad.example:5000"   # адрес проверяющей системы (п. 3.4)
+  team_token: "PUT_TEAM_TOKEN_HERE"
+
+flags:
+  regex: "[A-Z0-9]{31}="
+  lifetime_rounds: 5
+
+submit:
+  rate_per_sec: 200
+  burst: 400
+  max_flags_per_request: 100
+  max_body_bytes: 10240
+  queue_file: "/app/data/flags.queue.jsonl"
+  state_file: "/app/data/flags_seen.txt"
+
+analyzer:
+  checker_ips: []        # IP проверяющей системы (п. 3.4)
+  service_ports: []
+  verbosity: all
+
+game:
+  start: 0               # unix epoch начала зачёта; до старта — раунд 0
+  round_len: 60
+  detections_db: "/app/data/detections.db"
+  services:
+    8000: "shop"
+    8001: "chat"
+
+npc_check:
+  enabled: true

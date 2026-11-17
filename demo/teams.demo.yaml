@@ -1,0 +1,8 @@
+teams:
+  - name: npc
+    host: "127.0.0.1"
+    services: {web: 38080, raw: 38081}
+    npc: true
+  - name: team-1
+    host: "127.0.0.1"
+    services: {web: 28080, raw: 28081}

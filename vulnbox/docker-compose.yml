@@ -1,0 +1,51 @@
+# Capture-сторона vulnbox. Только пассивный просмотр трафика (п. 8.9):
+# контейнер ничего не блокирует и не фильтрует.
+#
+# Запуск (на vulnbox, из каталога vulnbox/):
+#   GAME_START=1764180000 docker compose up -d                 # poll-режим (файлы в ./caps)
+#   LAPTOP_IP=10.10.42.7 GAME_START=... docker compose --profile live up -d   # live PCAP-over-IP
+#
+# Имена файлов: r{раунд}_p{part}_{ЧЧММСС}.pcap, окно WINDOW секунд (20с = 3 файла на раунд).
+# До GAME_START весь трафик пишется как раунд 0.
+services:
+  capture:
+    build: .
+    image: ad-capture:latest
+    network_mode: host          # видеть весь трафик vulnbox
+    read_only: true
+    cap_add:
+      - NET_RAW                 # raw-сокет для tcpdump (пассивный снифф)
+      - NET_ADMIN               # выбор интерфейсов
+    cap_drop:
+      - ALL
+    environment:
+      IFACE: ${IFACE:-any}
+      GAME_START: ${GAME_START:-0}
+      ROUND_LEN: ${ROUND_LEN:-60}
+      WINDOW: ${WINDOW:-20}
+    command: >
+      python3 -u /app/capture.py
+      -i ${IFACE:-any} -o /caps
+      -s ${GAME_START:-0} -r ${ROUND_LEN:-60} -w ${WINDOW:-20}
+    volumes:
+      - ./caps:/caps
+    restart: unless-stopped
+
+  # live-режим: стрим на ноутбук по PCAP-over-IP (если vulnbox может
+  # достучаться до ноутбука; иначе используйте poll — laptop/pull.sh)
+  pcapstream:
+    profiles: ["live"]
+    build: .
+    image: ad-capture:latest
+    network_mode: host
+    read_only: true
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    cap_drop:
+      - ALL
+    environment:
+      LAPTOP_IP: ${LAPTOP_IP:?укажите LAPTOP_IP=IP_ноутбука}
+      IFACE: ${IFACE:-any}
+    command: /app/pcapstream.sh ${LAPTOP_IP} ${IFACE:-any}
+    restart: unless-stopped

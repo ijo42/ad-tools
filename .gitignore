@@ -1,0 +1,15 @@
+# runtime state / локальные конфиги с токенами
+laptop/config.yaml
+laptop/teams.yaml
+laptop/data/
+laptop/pkappa2-ingest/
+laptop/pull-state/
+laptop/flags.queue.jsonl
+laptop/flags_seen.txt
+laptop/detections.db*
+vulnbox/caps/
+demo/config.yaml
+demo/data/
+__pycache__/
+*.pyc
+.pytest_cache/

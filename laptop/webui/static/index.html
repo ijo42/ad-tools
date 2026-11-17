@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>AD Toolkit</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vue.global.prod.js"></script>
+</head>
+<body>
+<div id="app" v-cloak>
+  <header>
+    <h1>AD Toolkit</h1>
+    <span class="stats">детектов {{ meta.stats.detections }} · пейлоадов
+      {{ meta.stats.payloads }} · уникальных флагов {{ meta.stats.unique_flags }}</span>
+    <span class="spacer"></span>
+    <label><input type="checkbox" v-model="auto"> автообновление</label>
+    <button @click="refreshAll">обновить</button>
+  </header>
+
+  <nav class="tabs">
+    <button :class="{active: tab==='dets'}" @click="showTab('dets')">Детекты</button>
+    <button :class="{active: tab==='packets'}" @click="showTab('packets')">Пакеты</button>
+    <button :class="{active: tab==='analytics'}" @click="showTab('analytics')">Аналитика</button>
+  </nav>
+
+  <main>
+    <!-- ===================== ДЕТЕКТЫ ===================== -->
+    <section v-show="tab==='dets'">
+      <div class="controls">
+        <select v-model="detsFilter.service">
+          <option value="">все сервисы</option>
+          <option v-for="s in detServices" :key="s">{{ s }}</option>
+        </select>
+        <select v-model="detsFilter.label">
+          <option value="">все метки</option>
+          <option value="exploit">exploit</option>
+          <option value="noise">noise</option>
+          <option value="patched">patched</option>
+          <option value="replayed">replayed</option>
+        </select>
+        <select v-model="detsFilter.round">
+          <option value="">все раунды</option>
+          <option v-for="r in detRounds" :key="r" :value="r">раунд {{ r }}</option>
+        </select>
+        <select v-model="detsFilter.hasFlags">
+          <option value="">флаги: любые</option>
+          <option value="1">с флагами</option>
+          <option value="0">без флагов</option>
+        </select>
+        <select v-model="detsFilter.npc">
+          <option value="">NPC: любой</option>
+          <option value="flags">✓ работает</option>
+          <option value="noflags">✗ не сработал</option>
+          <option value="error">! недоступен</option>
+        </select>
+        <input v-model.trim="detsFilter.q" placeholder="поиск в payload/источниках/метках" size="24">
+        <span class="spacer"></span>
+        <span class="dim">клик по строке — детали и replay</span>
+      </div>
+
+      <div id="bulkbar" v-if="selected.size">
+        <b>{{ selected.size }}</b><span class="dim">выбрано</span>
+        <select v-model="bulkLabel">
+          <option value="exploit">exploit</option>
+          <option value="noise">noise</option>
+          <option value="patched">patched</option>
+          <option value="replayed">replayed</option>
+          <option value="">— снять метку —</option>
+        </select>
+        <button class="primary" @click="applyBulk">применить</button>
+        <button @click="clearSelection">снять выделение</button>
+      </div>
+
+      <table v-if="filteredDetections.length">
+        <thead><tr>
+          <th><input type="checkbox" :checked="allSelected" @change="toggleAll($event)"></th>
+          <th>#</th><th>сервис</th><th>тип</th><th>детект</th><th>хиты</th>
+          <th>раунды</th><th>флаги</th><th>NPC</th><th>источники</th><th>метка</th><th></th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="d in filteredDetections" :key="d.id" class="det" @click="openDetail(d.id)">
+            <td><input type="checkbox" :checked="selected.has(d.id)"
+                       @click.stop @change="toggleSelect(d.id, $event.target.checked)"></td>
+            <td>{{ d.id }}</td>
+            <td>{{ d.service }}</td>
+            <td>{{ d.kind }}</td>
+            <td><span class="preview" :title="d.preview">{{ d.preview }}</span></td>
+            <td>{{ d.count }}</td>
+            <td><span v-for="r in d.rounds.slice(-6)" :key="r" class="chip r">{{ r }}</span>
+                <span v-if="d.rounds.length > 6">+{{ d.rounds.length - 6 }}</span></td>
+            <td>
+              <span v-for="f in d.flags.slice(0,3)" :key="f" class="chip f">{{ f.slice(0,8) }}…</span>
+              <span v-if="d.flags.length > 3">+{{ d.flags.length - 3 }}</span>
+              <span v-if="!d.flags.length">—</span>
+            </td>
+            <td v-html="npcBadge(d)"></td>
+            <td>{{ d.srcs.length }} шт.</td>
+            <td><span v-if="d.label" class="badge" :class="d.label">{{ d.label }}</span></td>
+            <td>▸</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">детектов пока нет — ждём атаки</div>
+
+      <!-- панель детекта -->
+      <div id="detail" v-if="detail">
+        <div class="row">
+          <b>#{{ detail.id }} · {{ detail.service }} · {{ detail.kind }} · повторов {{ detail.count }}</b>
+          <span class="spacer"></span>
+          <button @click="detail=null">закрыть</button>
+        </div>
+        <div class="row">
+          <span class="k">флаги</span>
+          <span v-for="f in detail.flags" :key="f" class="chip f">{{ f }}</span>
+          <span v-if="!detail.flags.length">—</span>
+        </div>
+        <div class="row">
+          <span class="k">раунды</span>
+          <span v-for="r in detail.rounds" :key="r" class="chip r">{{ r }}</span>
+          <span v-if="!detail.rounds.length">—</span>
+        </div>
+        <div class="row"><span class="k">источники</span>{{ detail.srcs.join(', ') }}</div>
+        <div class="row">
+          <span class="k">NPC-проверка</span>
+          <span v-html="npcBadge(detail)"></span>
+          <span v-for="f in detail.npc_flags" :key="f" class="chip f">{{ f }}</span>
+          <button title="повторить автопробу на NPC" @click="recheckNpc">↻</button>
+        </div>
+        <div class="row">
+          <span class="k">метка</span>
+          <select v-model="detail.label">
+            <option value="">— нет —</option>
+            <option value="exploit">exploit</option>
+            <option value="noise">noise</option>
+            <option value="patched">patched</option>
+            <option value="replayed">replayed</option>
+          </select>
+          <input v-model="detail.note" placeholder="заметка" size="40">
+          <button class="primary" @click="saveLabel">сохранить</button>
+        </div>
+        <div class="row">
+          <span class="k">replay</span>
+          <select v-model="replayMode">
+            <option value="verbatim">verbatim</option>
+            <option value="template">template</option>
+          </select>
+          <button class="primary" @click="startReplay">запустить на все команды</button>
+          <span class="joblog">{{ jobText }}</span>
+        </div>
+        <div class="row"><span class="k">payload</span></div>
+        <pre>{{ detail.payload_text }}</pre>
+        <div class="row"><span class="k">варианты (слитые атаки)</span></div>
+        <pre>{{ variantsText || '—' }}</pre>
+        <div class="row"><span class="k">результаты replay</span></div>
+        <pre>{{ replaysText || '—' }}</pre>
+        <div class="row">
+          <span class="k">клонер</span>
+          <button @click="loadClone">клонировать в pwntools</button>
+          <button v-if="cloneScript" @click="copyClone">скопировать</button>
+        </div>
+        <pre v-if="cloneScript" ref="clonepre">{{ cloneScript }}</pre>
+        <div class="row">
+          <span class="k">свой payload</span>
+          <input v-model="customHost" placeholder="host цели" size="14">
+          <input v-model.number="customPort" placeholder="port" size="5">
+          <button class="primary" @click="sendCustom">отправить</button>
+        </div>
+        <textarea v-model="customPayload" rows="8"
+                  placeholder="отредактируйте payload (latin-1) и отправьте на цель"></textarea>
+      </div>
+    </section>
+
+    <!-- ===================== ПАКЕТЫ ===================== -->
+    <section v-show="tab==='packets'">
+      <div class="controls">
+        <select v-model="pktFilter.round">
+          <option value="">все раунды</option>
+          <option v-for="r in pktRounds" :key="r.round" :value="r.round">
+            раунд {{ r.round }} ({{ r.packets }})
+          </option>
+        </select>
+        <select v-model="pktFilter.service">
+          <option value="">все сервисы</option>
+          <option v-for="s in pktServices" :key="s">{{ s }}</option>
+        </select>
+        <select v-model="pktFilter.direction">
+          <option value="">вход+выход</option>
+          <option value="in">входящие (attacks)</option>
+          <option value="out">исходящие</option>
+          <option value="other">прочее</option>
+        </select>
+        <select v-model="pktFilter.hasFlag">
+          <option value="">флаги: любые</option>
+          <option value="1">с флагом</option>
+          <option value="0">без флагов</option>
+        </select>
+        <input v-model.trim="pktFilter.q" placeholder="поиск в payload/адресах" size="22"
+               @input="onPktQ">
+        <button class="primary" @click="pktPage = 0; loadPackets()">показать</button>
+      </div>
+      <table>
+        <thead><tr>
+          <th>время</th><th>раунд</th><th>напр.</th><th>сервис</th>
+          <th>src → dst</th><th>размер</th><th>флаг</th><th>payload</th>
+        </tr></thead>
+        <tbody>
+          <template v-for="p in packets" :key="p.id">
+            <tr v-if="p.round !== p._prevRound" class="rmark">
+              <td colspan="8">— раунд {{ p.round }} —</td>
+            </tr>
+            <tr>
+              <td>{{ fmtTime(p.ts) }}</td>
+              <td>{{ p.round }}</td>
+              <td>{{ dirLabel(p.direction) }}</td>
+              <td>{{ p.service || '—' }}</td>
+              <td>{{ p.src }} → {{ p.dst }}</td>
+              <td>{{ p.size }}B</td>
+              <td><span v-if="p.has_flag" class="chip f">FLAG</span></td>
+              <td><span class="pkt-preview" :title="p.preview">{{ p.preview }}</span></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <div class="pager">
+        <button :disabled="pktPage === 0" @click="pktPage--; loadPackets()">◀ назад</button>
+        <span class="dim">стр. {{ pktPage + 1 }}</span>
+        <button :disabled="pktNextDisabled" @click="pktPage++; loadPackets()">вперёд ▶</button>
+        <span class="dim">всего: {{ pktTotal }}</span>
+      </div>
+    </section>
+
+    <!-- ===================== АНАЛИТИКА ===================== -->
+    <section v-show="tab==='analytics'">
+      <div class="chart">
+        <h3>Пакеты и утёкшие флаги по раундам</h3>
+        <div class="legend">
+          <span><span class="sw acc"></span>пакеты</span>
+          <span><span class="sw ok"></span>флаги (traffic)</span>
+          <span><span class="sw warn"></span>с флагом в payload</span>
+        </div>
+        <div v-html="chartRounds"></div>
+      </div>
+      <div class="chart">
+        <h3>Хиты детектов по раундам</h3>
+        <div class="legend"><span><span class="sw warn"></span>хиты (повторы атак)</span></div>
+        <div v-html="chartHits"></div>
+      </div>
+      <div class="chart">
+        <h3>Топ-10 атакующих (входящие)</h3>
+        <table>
+          <thead><tr><th>источник</th><th>пакетов</th><th>с флагом</th></tr></thead>
+          <tbody>
+            <tr v-for="s in analytics.top_srcs" :key="s.src">
+              <td>{{ s.src }}</td><td>{{ s.packets }}</td><td>{{ s.flagged }}</td>
+            </tr>
+            <tr v-if="!analytics.top_srcs.length"><td colspan="3" class="empty">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="chart">
+        <h3>По сервисам</h3>
+        <table>
+          <thead><tr>
+            <th>сервис</th><th>пакетов</th><th>вход.</th><th>исход.</th><th>с флагом</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="s in analytics.services" :key="s.service">
+              <td>{{ s.service }}</td><td>{{ s.packets }}</td><td>{{ s.in_pkts }}</td>
+              <td>{{ s.out_pkts }}</td><td>{{ s.flagged }}</td>
+            </tr>
+            <tr v-if="!analytics.services.length"><td colspan="5" class="empty">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
