@@ -8,21 +8,27 @@ from adtool.store import DetectionStore  # noqa: F401
 class Ctx:
     """Общий контекст приложения: стор, цели, очередь флагов."""
 
-    def __init__(self, store, flag_queue, teams, npc_targets, flag_pattern):
+    def __init__(self, store, flag_queue, teams, npc_targets, flag_pattern,
+                 npc_prober=None, game_monitor=None, submitter=None):
         self.store = store
         self.flag_queue = flag_queue
         self.teams = teams            # команды без NPC
         self.npc_targets = npc_targets
         self.flag_pattern = flag_pattern
+        self.npc_prober = npc_prober    # NpcProber или None (ingest выключен)
+        self.game_monitor = game_monitor  # GameMonitor или None (нет ForcAD API)
+        self.submitter = submitter        # Submitter или None
 
 
-def run_replay(job, ctx: Ctx, payload: bytes, targets, mode: str, det_id=None):
+def run_replay(job, ctx: Ctx, payload: bytes, targets, mode: str, det_id=None,
+               service=None):
     """Тело фонового job (JobRegistry вызывает fn(job, *args)):
     реплай payload на targets, сдача флагов, статусы NPC."""
     results = replay(
         payload, targets, mode=("verbatim" if mode == "npc" else mode),
         flag_pattern=ctx.flag_pattern,
         log_fn=lambda msg: job["log"].append(msg),
+        service=service,
     )
     flags = harvest_flags(results, ctx.flag_pattern)
     # флаги NPC очков не дают (п. 4.7) — не тратим квоту сабмиттера

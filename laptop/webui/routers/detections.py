@@ -111,7 +111,7 @@ def replay_detection(request: Request, det_id: int, body: ReplayRequest):
     targets = ctx.npc_targets if body.mode == "npc" else ctx.teams
     job_id = request.app.state.jobs.start(
         run_replay, ctx, det["sample"], targets,
-        det_id=det_id, mode=body.mode,
+        det_id=det_id, mode=body.mode, service=det["service"],
     )
     return {"job_id": job_id}
 

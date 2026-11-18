@@ -14,12 +14,22 @@ UUID_RE = re.compile(
 )
 HEX32_RE = re.compile(r"\b[0-9a-fA-F]{32}\b")
 HEX64_RE = re.compile(r"\b[0-9a-fA-F]{64}\b")
+# JWT (header.payload.signature) и длинные base64url-токены (сессии):
+# требуют строчных букв/-/_ в середине, чтобы не задевать флаг [A-Z0-9]{31}=
+JWT_RE = re.compile(
+    r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+)
+B64URL_RE = re.compile(
+    r"(?=[A-Za-z0-9_-]{24,}\b)[A-Za-z0-9_-]*[a-z_][A-Za-z0-9_-]*"
+)
 
 PLACEHOLDERS = [
     (FLAG_RE, "{FLAG}"),
     (UUID_RE, "{UUID}"),
     (HEX64_RE, "{HEX64}"),
     (HEX32_RE, "{HEX32}"),
+    (JWT_RE, "{TOKEN}"),
+    (B64URL_RE, "{TOKEN}"),
 ]
 
 

@@ -68,3 +68,16 @@ tr.rmark td { background:#202634; color:var(--warn); font-size:12px; padding:3px
 .sw.warn{ background:var(--warn); }
 .pager { display:flex; gap:8px; align-items:center; margin-top:10px; }
 textarea { width:100%; }
+
+/* P2: статус игры, NPC-автопроба, алерты */
+.gamechip { color:var(--warn); font-size:13px; background:#202634;
+            border:1px solid var(--line); border-radius:10px; padding:3px 10px; }
+.gamechip.off { color:var(--bad); }
+header .switch { display:flex; gap:6px; align-items:center; cursor:pointer;
+                 color:var(--fg); }
+header .switch input { accent-color:var(--acc); }
+#alerts { display:flex; gap:10px; align-items:center; padding:8px 16px;
+          background:#2a2030; border-bottom:1px solid var(--line); }
+#alerts .alerttext { color:var(--warn); white-space:nowrap; overflow:hidden;
+                     text-overflow:ellipsis; max-width:80%; }
+#alerts button { font-size:12px; padding:2px 8px; }

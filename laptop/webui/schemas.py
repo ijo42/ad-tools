@@ -28,3 +28,8 @@ class CustomReplayRequest(BaseModel):
 class CloneRequest(BaseModel):
     host: str | None = None
     port: int | None = Field(default=None, gt=0, le=65535)
+
+
+class NpcAutoprobeRequest(BaseModel):
+    """Переключатель автопробы новых детектов на NPC."""
+    enabled: bool

@@ -11,8 +11,8 @@ forcad:
 flags:
   # Формат флага из регламента (п. 4.1): [A-Z0-9]{31}=
   regex: "[A-Z0-9]{31}="
-  # Флаг действует 5 раундов (п. 4.2) — все флаги старше этого числа раундов
-  # сабмиттер помечает как устаревшие (не отправляет, если известен текущий раунд)
+  # Срок жизни флага берётся из ForcAD API автоматически (game_monitor);
+  # просроченные флаги не отправляются (иначе ForcAD вернул бы «Flag is too old»)
   lifetime_rounds: 5
 
 submit:
@@ -39,6 +39,7 @@ analyzer:
 game:
   # Начало зачётной части (unix epoch) — для расчёта номера раунда.
   # Раунд 60 секунд (п. 2.1). Пример: 1764180000. Пусто/0 — раунды не считаются.
+  # Если 0 и доступен ForcAD API — start калибруется автоматически (game_monitor).
   start: 0
   round_len: 60
   # Имя SQLite-базы детектов (общая для ingest и web)
@@ -52,5 +53,37 @@ game:
 
 # Автопроверка каждого нового детекта на NPC (npc: true в teams.yaml).
 # NPC — безопасный полигон: флаги NPC очков не дают (п. 4.7).
+# В UI есть живой переключатель (шапка «NPC-автопроба») — гасит автопробу
+# без рестарта, например при шумовом шторме; бюджет: ≤10 проб/мин (см.
+# game_monitor и adtool/autoprobe.py).
 npc_check:
   enabled: true
+
+# Монитор ForcAD API (P2): текущий раунд, флаг-lifetime, статусы чекеров
+# вашей команды (SLA-алерты DOWN/MUMBLE/CORRUPT в UI), калибровка game.start,
+# просроченные флаги не отправляются («Flag is too old»).
+game_monitor:
+  enabled: true
+  poll_interval: 15      # сек
+  # Ваша команда в ForcAD — для SLA-алертов по статусам чекера:
+  team_name: "TeamName"  # как на скорборде (или team_id: 5)
+  # team_id: 5
+
+# Приём трафика (vulnbox -> ноутбук). По умолчанию слушает только 127.0.0.1.
+# Для live-режима (PCAP-over-IP с vulnbox) запустите с --listen-ip 0.0.0.0
+# (docker: LISTEN_IP=0.0.0.0) и включите токены, чтобы чужие в игровой сети
+# не могли инжектить поддельные pcap в ваш детектор:
+ingest:
+  # токен для HTTP-upload (:57013/pcap) — заголовок X-Ingest-Token (pull-режим)
+  # token: "long-random-string"
+  # токен для PCAP-over-IP (:57012) — первые байты потока (pcapstream POIP_TOKEN=)
+  # poip_token: "another-long-random-string"
+
+# Retention (P2): БД не растёт бесконечно при сканерном шуме.
+retention:
+  enabled: true
+  interval_sec: 60
+  packets_rows: 500000       # максимум строк в packets (старые удаляются)
+  variants_rows: 2000
+  seen_flags_rows: 50000
+

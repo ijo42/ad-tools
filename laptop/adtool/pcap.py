@@ -2,10 +2,12 @@
 
 Supports:
 - classic pcap (LE/BE, usec/nsec, Ethernet / Linux SLL / Linux SLL2 / raw IP)
+- IPv4 and IPv6 (incl. 802.1Q VLAN and QinQ double-tagging)
 - PCAP-over-IP: byte stream where a new global header means a new session
   (client reconnects mid-stream)
 
-Does NOT support pcapng (tcpdump defaults to classic pcap).
+pcapng is detected and reported (tcpdump defaults to classic pcap; tools
+like dumpcap/tshark produce pcapng).
 """
 
 from collections import namedtuple
@@ -57,7 +59,13 @@ class PcapParser:
             if not self._got_header:
                 if len(self._buf) < 24:
                     break
-                if not self._parse_header(self._buf[:24]):
+                try:
+                    ok = self._parse_header(self._buf[:24])
+                except PcapFormatError:
+                    if not self.allow_resync:
+                        raise  # файл: честная ошибка (например, pcapng)
+                    ok = False  # поток: ищем следующий валидный заголовок
+                if not ok:
                     if self.allow_resync:
                         self._buf = self._buf[1:]
                         continue
@@ -85,6 +93,11 @@ class PcapParser:
         return packets
 
     def _parse_header(self, hdr):
+        if hdr[:4] == b"\x0a\x0d\x0d\x0a":
+            raise PcapFormatError(
+                "pcapng не поддерживается — перезапишите tcpdump'ом: "
+                "`tcpdump -w file.pcap` (или конвертируйте: editcap -F pcap)"
+            )
         magic = struct.unpack("<I", hdr[:4])[0]
         if magic in (_MAGIC_LE_USEC, _MAGIC_LE_NSEC):
             self._end = "<"
@@ -105,19 +118,19 @@ class PcapParser:
         offset = None
         if lt == LINK_ETHERNET and len(raw) > 14:
             ethertype = struct.unpack(">H", raw[12:14])[0]
-            if ethertype == 0x8100 and len(raw) > 18:  # 802.1Q vlan
-                ethertype = struct.unpack(">H", raw[16:18])[0]
-                offset = 18
-            else:
-                offset = 14
-            if ethertype not in (0x0800,):
+            offset = 14
+            # 802.1Q (0x8100) и QinQ/802.1ad (0x88A8): пропускаем теги
+            while ethertype in (0x8100, 0x88A8) and len(raw) > offset + 4:
+                ethertype = struct.unpack(">H", raw[offset + 2 : offset + 4])[0]
+                offset += 4
+            if ethertype not in (0x0800, 0x86DD):
                 return None
         elif lt == LINK_SLL and len(raw) > 16:
-            if struct.unpack(">H", raw[14:16])[0] != 0x0800:
+            if struct.unpack(">H", raw[14:16])[0] not in (0x0800, 0x86DD):
                 return None
             offset = 16
         elif lt == LINK_SLL2 and len(raw) > 20:
-            if struct.unpack(">H", raw[0:2])[0] != 0x0800:
+            if struct.unpack(">H", raw[0:2])[0] not in (0x0800, 0x86DD):
                 return None
             offset = 20
         elif lt == LINK_RAW and len(raw) >= 20:
@@ -129,10 +142,15 @@ class PcapParser:
     def _decode_ip(self, ts, raw):
         if len(raw) < 20:
             return None
-        ver_ihl = raw[0]
-        if ver_ihl >> 4 != 4:
-            return None
-        ihl = (ver_ihl & 0x0F) * 4
+        version = raw[0] >> 4
+        if version == 4:
+            return self._decode_ipv4(ts, raw)
+        if version == 6:
+            return self._decode_ipv6(ts, raw)
+        return None
+
+    def _decode_ipv4(self, ts, raw):
+        ihl = (raw[0] & 0x0F) * 4
         if len(raw) < ihl:
             return None
         proto = raw[9]
@@ -140,7 +158,32 @@ class PcapParser:
         dst_ip = ".".join(str(b) for b in raw[16:20])
         if proto not in (TCP_PROTO, UDP_PROTO):
             return None
-        l4 = raw[ihl:]
+        return self._decode_l4(ts, raw, ihl, proto, src_ip, dst_ip)
+
+    def _decode_ipv6(self, ts, raw):
+        if len(raw) < 40:
+            return None
+        src = raw[8:24]
+        dst = raw[24:40]
+        proto, offset = raw[6], 40
+        # skip extension headers (hop-by-hop, routing, dst options)
+        for _ in range(8):
+            if proto in (0, 43, 60):
+                if len(raw) < offset + 8:
+                    return None
+                proto = raw[offset]
+                ext_len = (raw[offset + 1] + 1) * 8
+                offset += ext_len
+            else:
+                break
+        if proto not in (TCP_PROTO, UDP_PROTO):
+            return None
+        src_ip = ":".join(f"{(src[i] << 8) | src[i + 1]:x}" for i in range(0, 16, 2))
+        dst_ip = ":".join(f"{(dst[i] << 8) | dst[i + 1]:x}" for i in range(0, 16, 2))
+        return self._decode_l4(ts, raw, offset, proto, src_ip, dst_ip)
+
+    def _decode_l4(self, ts, raw, offset, proto, src_ip, dst_ip):
+        l4 = raw[offset:]
         if len(l4) < 8:
             return None
         src_port, dst_port = struct.unpack(">HH", l4[:4])

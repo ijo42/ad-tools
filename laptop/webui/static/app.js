@@ -17,6 +17,48 @@ createApp({
     const meta = reactive({ stats: { detections: 0, payloads: 0, unique_flags: 0 }, teams: [], npc_count: 0 });
     const jobText = ref('');
 
+    /* ---------- статус игры + NPC-автопроба ---------- */
+    const gameStatus = reactive({ game: null, submitter: null, npc_autoprobe: null, alerts: [] });
+    const alertsDismissed = ref(0);
+
+    const alertText = computed(() => {
+      const fresh = (gameStatus.alerts || []).slice(alertsDismissed.value);
+      return fresh.length ? fresh.map(a => `[${a.level}] ${a.text}`).join('  ·  ') : '';
+    });
+    const lastAlert = computed(() => {
+      const fresh = (gameStatus.alerts || []).slice(alertsDismissed.value);
+      return fresh.length ? fresh[fresh.length - 1] : { level: 'info' };
+    });
+    function dismissAlerts() { alertsDismissed.value = (gameStatus.alerts || []).length; }
+
+    async function loadSystemStatus() {
+      try {
+        const s = await api('/api/system/status');
+        gameStatus.game = s.game;
+        gameStatus.submitter = s.submitter;
+        gameStatus.npc_autoprobe = s.npc_autoprobe;
+        gameStatus.alerts = s.alerts || [];
+      } catch (_) { /* ingest без game_monitor — молча */ }
+    }
+    const toggleMsg = ref('');
+    let toggleMsgTimer = null;
+    async function toggleNpcAutoprobe(ev) {
+      const on = ev.target.checked;
+      try {
+        const r = await api('/api/system/npc_autoprobe', { enabled: on });
+        gameStatus.npc_autoprobe = r.enabled;
+        toggleMsg.value = r.enabled
+          ? 'NPC-автопроба включена'
+          : 'NPC-автопроба выключена (ручной ↻ работает)';
+        jobText.value = toggleMsg.value;
+      } catch (e) {
+        ev.target.checked = !on;
+        toggleMsg.value = 'ошибка: ' + e.message;
+      }
+      clearTimeout(toggleMsgTimer);
+      toggleMsgTimer = setTimeout(() => { toggleMsg.value = ''; }, 6000);
+    }
+
     function showTab(name) {
       tab.value = name;
       if (name === 'packets') loadPackets();
@@ -295,13 +337,16 @@ createApp({
       if (!auto.value) return;
       if (tab.value === 'dets') refreshList();
       if (tab.value === 'packets') loadPackets();
+      loadSystemStatus();
     }, 5000);
 
     refreshList();
     api('/api/meta').then(m => Object.assign(meta, m));
+    loadSystemStatus();
 
     return {
       tab, auto, meta, jobText, showTab, refreshAll,
+      gameStatus, alertText, lastAlert, dismissAlerts, toggleNpcAutoprobe, toggleMsg,
       detections, detsFilter, filteredDetections, detServices, detRounds,
       selected, allSelected, toggleAll, toggleSelect, clearSelection,
       bulkLabel, applyBulk,

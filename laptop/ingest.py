@@ -57,6 +57,18 @@ class Ingest:
         self.ingest_dir = ingest_dir
         self.save_pcaps = save_pcaps
         self.store = DetectionStore(store_path)
+        # hardening: опциональные токены приёма трафика (раздел ingest в
+        # config.yaml). Пока заданы — клиенты обязаны их предъявить:
+        # HTTP-upload — заголовок X-Ingest-Token, PCAP-over-IP — токен
+        # первыми байтами потока (pcapstream.sh шлёт его перед стримом).
+        ingest_cfg = (config or {}).get("ingest") or {}
+        self.http_token = ingest_cfg.get("token") or None
+        self.poip_token = ingest_cfg.get("poip_token") or None
+        if self.http_token or self.poip_token:
+            print("ingest auth: " + ", ".join(
+                part for part, on in
+                (("http-token", self.http_token), ("poip-token", self.poip_token))
+                if on))
         self.npc_prober = None
         if npc_targets and npc_cfg.get("enabled", True):
             self.npc_prober = NpcProber(
@@ -65,7 +77,13 @@ class Ingest:
                 store=self.store,
             )
         self.analyzer = Analyzer(
-            config=analyzer_cfg,
+            config={
+                **analyzer_cfg,
+                # порты наших сервисов — чтобы отличать «утечку» флага наружу
+                # (leak) от входящей атаки (attack) в raw-канале
+                "service_ports": list(self.services.keys())
+                or analyzer_cfg.get("service_ports", []),
+            },
             flag_pattern=self.flag_re.pattern.decode(),
             event_cb=make_event_logger(self.flag_queue, self._attribute_flag),
             payload_cb=self._record_payload,
@@ -203,7 +221,10 @@ def flag_pattern_of(flag_cfg):
 
 def make_event_logger(flag_queue, attribute_flag=None):
     """Print events; push attack flags to the queue; attribute flags to
-    detections (service + attacker + round)."""
+    detections (service + attacker + round).
+
+    kind=leak (флаг уходит ИЗ нашего сервиса) не сдаётся — это наш флаг,
+    его можно только атрибутировать детекту/раунду."""
 
     def log(event):
         if isinstance(event, str):
@@ -217,11 +238,11 @@ def make_event_logger(flag_queue, attribute_flag=None):
             )
             if event["kind"] == "attack":
                 flag_queue.push(event["flag"], source="traffic", meta=event.get("src"))
-                if attribute_flag:
-                    try:
-                        attribute_flag(event)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[attr error] {exc}")
+            if event["kind"] in ("attack", "leak") and attribute_flag:
+                try:
+                    attribute_flag(event)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[attr error] {exc}")
         else:
             print(event)
 
@@ -234,11 +255,24 @@ class _ReuseServer(socketserver.ThreadingTCPServer):
 
 
 def start_pcap_over_ip_server(ingest, port, listen_ip):
-    """Accept N concurrent PCAP-over-IP clients; each stream is its own parser."""
+    """Accept N concurrent PCAP-over-IP clients; each stream is its own parser.
+    С poip_token: первые байты потока — токен, потом pcap-стрим."""
 
     def conn_handler(conn):
         parser = PcapParser(allow_resync=True)
         try:
+            if ingest.poip_token:
+                token = b""
+                while len(token) < len(ingest.poip_token):
+                    chunk = conn.recv(len(ingest.poip_token) - len(token))
+                    if not chunk:
+                        conn.close()
+                        return
+                    token += chunk
+                if token != ingest.poip_token.encode():
+                    print("[poip] неверный токен — соединение закрыто")
+                    conn.close()
+                    return
             while True:
                 data = conn.recv(65536)
                 if not data:
@@ -266,10 +300,21 @@ def start_http_server(ingest, port, listen_ip):
             if self.path != "/pcap":
                 self.send_error(404)
                 return
+            if ingest.http_token and \
+                    self.headers.get("X-Ingest-Token") != ingest.http_token:
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b"bad or missing X-Ingest-Token")
+                return
             length = int(self.headers.get("Content-Length", 0))
             data = self.rfile.read(length)
             try:
-                ingest.handle_pcap_bytes(data, tag="upload")
+                # каждый загруженный файл — полный pcap со своим заголовком:
+                # общий парсер съедает второй и последующие файлы (resync
+                # перескакивает их глобальный заголовок)
+                ingest.handle_pcap_bytes(
+                    data, tag="upload", parser=PcapParser(allow_resync=True)
+                )
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"ok")
@@ -289,7 +334,9 @@ def start_http_server(ingest, port, listen_ip):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--listen-ip", default="0.0.0.0")
+    ap.add_argument("--listen-ip", default="127.0.0.1",
+                    help="по умолчанию только localhost; для приёма стрима с "
+                         "vulnbox по сети укажите 0.0.0.0 (или IP ноутбука)")
     ap.add_argument("--pcap-over-ip-port", type=int, default=DEFAULT_PCAP_OVER_IP_PORT)
     ap.add_argument("--http-port", type=int, default=DEFAULT_HTTP_PORT)
     ap.add_argument("--ingest-dir", default="pkappa2-ingest")
@@ -300,7 +347,7 @@ def main():
     args = ap.parse_args()
 
     config = load_config(args.config)
-    store_db = args.store or (
+    store_db = (
         (config.get("game") or {}).get("detections_db") or "detections.db"
     )
     npc_targets = []

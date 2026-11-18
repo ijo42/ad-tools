@@ -12,10 +12,28 @@
     <h1>AD Toolkit</h1>
     <span class="stats">детектов {{ meta.stats.detections }} · пейлоадов
       {{ meta.stats.payloads }} · уникальных флагов {{ meta.stats.unique_flags }}</span>
+    <span class="gamechip" v-if="gameStatus.game && gameStatus.game.available"
+          :class="{off: gameStatus.game.running === false}">
+      раунд {{ gameStatus.game.round ?? '—' }}
+      · флаг живёт {{ gameStatus.game.flag_lifetime ?? '—' }}
+      <span v-if="gameStatus.game.running === false" class="badge npc-err">игра не идёт</span>
+    </span>
+    <span class="gamechip" v-else-if="gameStatus.game">ForcAD API недоступен</span>
     <span class="spacer"></span>
+    <label class="switch" title="Автоматическая проверка новых детектов на NPC">
+      <input type="checkbox" :checked="gameStatus.npc_autoprobe"
+             @change="toggleNpcAutoprobe($event)"> NPC-автопроба
+    </label>
+    <span class="dim" v-if="toggleMsg">{{ toggleMsg }}</span>
     <label><input type="checkbox" v-model="auto"> автообновление</label>
     <button @click="refreshAll">обновить</button>
   </header>
+
+  <div id="alerts" v-if="alertText">
+    <span class="badge" :class="lastAlert.level === 'alarm' ? 'npc-err' : 'npc-run'">!</span>
+    <span class="alerttext" :title="alertText">{{ alertText }}</span>
+    <button @click="dismissAlerts">скрыть</button>
+  </div>
 
   <nav class="tabs">
     <button :class="{active: tab==='dets'}" @click="showTab('dets')">Детекты</button>

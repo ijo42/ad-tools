@@ -22,10 +22,13 @@ services:
       --config /app/config.yaml --teams /app/teams.yaml
       --with-ingest --with-submitter
       --ingest-dir /app/data/pkappa2-ingest
+      --listen-ip ${LISTEN_IP:-127.0.0.1}
     environment:
       # сабмиттер реальной отправки требует токен в config.yaml (forcad.team_token);
       # WEB_DRY=1 — dry-режим (флаги помечаются, не отправляются)
       WEB_DRY: ${WEB_DRY:-1}
+      # LISTEN_IP=0.0.0.0 — если vulnbox стримит PCAP-over-IP по сети (live-режим);
+      # по умолчанию приём трафика слушает только localhost (безопаснее)
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./teams.yaml:/app/teams.yaml:ro

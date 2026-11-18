@@ -440,6 +440,37 @@ class DetectionStore:
         ]
         return {"rows": rows, "total": total, "rounds": rounds}
 
+    def prune(self, packets_keep=500000, variants_keep=2000, seen_flags_keep=50000):
+        """Retention: держим БД в пределах лимитов (долгие игры со сканерным
+        шумом дают миллионы строк packets). Возвращает (packets_del, variants_del,
+        flags_del). Дetections не трогаем — это суть инструмента."""
+        out = []
+        with self._lock:
+            for table, keep in (("packets", packets_keep),
+                                ("variants", variants_keep),
+                                ("seen_flags", seen_flags_keep)):
+                n = self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                if n <= keep:
+                    out.append(0)
+                    continue
+                rowid = "rowid"
+                if table == "seen_flags":
+                    # составной PRIMARY KEY (flag, round, src)
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE rowid IN ("
+                        f"SELECT rowid FROM {table} ORDER BY ts ASC LIMIT ?)",
+                        (n - keep,),
+                    )
+                else:
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE {rowid} IN ("
+                        f"SELECT {rowid} FROM {table} ORDER BY {rowid} ASC LIMIT ?)",
+                        (n - keep,),
+                    )
+                out.append(n - keep)
+            self._conn.commit()
+        return tuple(out)
+
     def add_seen_flag(self, flag, round_no, ts, src, service):
         if not flag:
             return

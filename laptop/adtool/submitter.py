@@ -4,6 +4,11 @@ Regulation constraints (п. 4.3–4.4):
 - JSON array to /flags, team token in X-Team-Token header
 - <= 100 flags per request, <= 10 KiB body
 - quota 200 flags/sec, burst 400
+
+Вердикты соответствуют реальному ForcAD (проверено по исходникам):
+PUT /flags возвращает [{"msg": ..., "flag": ...}, ...] на каждый флаг.
+Просроченные флаги (current_round - flag_round > flag_lifetime) не
+отправляются, если задан stale_fn (GameMonitor, P2).
 """
 
 import json
@@ -35,8 +40,30 @@ class TokenBucket:
             time.sleep(need)
 
 
+# строки-вердикты реального ForcAD (lib/helpers/exceptions.py + judge)
+_REASONS = (
+    ("your own", "own_flag"),
+    ("already stolen", "already_stolen"),
+    ("too old", "too_old"),
+    ("service is down", "service_down"),
+    ("not available", "game_off"),
+)
+
+
+def classify_verdict(msg):
+    """Вердикт ForcAD -> (ok, reason). reason='' при успехе."""
+    if "accepted" in msg:
+        return True, ""
+    low = msg.lower()
+    for needle, reason in _REASONS:
+        if needle in low:
+            return False, reason
+    return False, "other"
+
+
 class Submitter:
-    def __init__(self, base_url, team_token, config=None, queue_file="flags.queue.jsonl"):
+    def __init__(self, base_url, team_token, config=None, queue_file="flags.queue.jsonl",
+                 stale_fn=None):
         cfg = config or {}
         self.base_url = base_url.rstrip("/")
         self.team_token = team_token
@@ -46,10 +73,20 @@ class Submitter:
         self.max_body = cfg.get("max_body_bytes", 10240)
         self.queue_file = cfg.get("queue_file", queue_file)
         self.state_file = cfg.get("state_file", "flags_seen.txt")
+        # stale_fn(ts) -> True: флаг из раунда с временем ts уже просрочен
+        # (ForcAD вернул бы "Flag is too old"); предоставляется GameMonitor'ом
+        self.stale_fn = stale_fn
         self.bucket = TokenBucket(self.rate_per_sec, self.burst)
         self._stop = threading.Event()
         self.log_fn = print
+        self.stats = {"accepted": 0, "rejected": 0, "stale_skipped": 0,
+                      "reasons": {}}
+        self._stats_lock = threading.Lock()
         self._load_state()
+
+    def _bump(self, reason, n=1):
+        with self._stats_lock:
+            self.stats[reason] = self.stats.get(reason, 0) + n
 
     def _load_state(self):
         self.seen = set()
@@ -88,14 +125,51 @@ class Submitter:
                     self._mark(flag)
                 continue
             try:
-                self._post(batch)
-                self.log_fn(f"[+] submitted {len(batch)} flags")
+                verdicts = self._post(batch)
+                self._apply_verdicts(verdicts, batch)
                 for flag in batch:
                     self._mark(flag)
             except (urllib.error.URLError, OSError, ValueError) as exc:
-                self.log_fn(f"[!] submit failed: {exc}")
+                self.log_fn(f"[!] submit failed: {exc} — флаги возвращены в очередь")
                 errors.extend(batch)
+                self._requeue(batch)
         return sent, errors
+
+    def _apply_verdicts(self, verdicts, batch):
+        """Разбор ответа ForcAD: [{msg, flag}, ...] на каждый флаг батча."""
+        by_flag = {}
+        if isinstance(verdicts, list):
+            for item in verdicts:
+                if isinstance(item, dict) and item.get("flag"):
+                    by_flag[item["flag"]] = item.get("msg", "")
+        ok = bad = 0
+        reasons = {}
+        for flag in batch:
+            msg = by_flag.get(flag, "")
+            good, reason = classify_verdict(msg) if msg else (False, "no_verdict")
+            if good:
+                ok += 1
+            else:
+                bad += 1
+                reasons[reason] = reasons.get(reason, 0) + 1
+            if msg:
+                self.log_fn(f"[verdict] {flag[:12]}… {msg}")
+        with self._stats_lock:
+            self.stats["accepted"] += ok
+            self.stats["rejected"] += bad
+            for reason, n in reasons.items():
+                self.stats["reasons"][reason] = self.stats["reasons"].get(reason, 0) + n
+        self.log_fn(f"[+] submitted {len(batch)} flags (accepted={ok}, rejected={bad})")
+
+    def _requeue(self, flags):
+        """Вернуть недосданные флаги в конец очереди (offset сабмиттера уже
+        за ними — иначе они терялись бы навсегда)."""
+        with open(self.queue_file, "a", encoding="utf-8") as fh:
+            for flag in flags:
+                fh.write(json.dumps(
+                    {"flag": flag, "ts": time.time(), "source": "retry",
+                     "meta": {}}
+                ) + "\n")
 
     def _post(self, flags):
         body = json.dumps(flags).encode()
@@ -113,7 +187,7 @@ class Submitter:
             return json.loads(resp.read().decode())
 
     def run(self, poll_interval=0.5, dry=False):
-        """Daemon: drain queue_file, dedup, submit in batches."""
+        """Daemon: drain queue_file, dedup, skip stale, submit in batches."""
         self.log_fn(
             f"submitter: queue={self.queue_file} -> {self.base_url}/flags "
             f"(rate {self.rate_per_sec}/s burst {self.burst}, "
@@ -136,11 +210,17 @@ class Submitter:
                     offset = fh.tell()
             except FileNotFoundError:
                 pass
-            fresh = [
-                r["flag"]
-                for r in records
-                if r.get("flag") and r["flag"] not in self.seen
-            ]
+            fresh = []
+            for r in records:
+                flag = r.get("flag")
+                if not flag or flag in self.seen:
+                    continue
+                if self.stale_fn is not None and self.stale_fn(r.get("ts") or 0):
+                    self._bump("stale_skipped")
+                    self.log_fn(f"[stale] {flag[:12]}… пропущен (flag_lifetime истёк)")
+                    self._mark(flag)  # чтобы не проверять повторно
+                    continue
+                fresh.append(flag)
             pending.extend(fresh)
             while pending:
                 batch, rest = pending[: self.max_flags], pending[self.max_flags :]

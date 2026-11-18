@@ -19,7 +19,9 @@ def load_teams(path):
         ports = []
         if "port" in team:
             ports.append(team["port"])
-        for _svc, port in (team.get("services") or {}).items():
+        services = {}
+        for svc, port in (team.get("services") or {}).items():
+            services[svc] = port
             ports.append(port)
         if not ports:
             ports.append(80)
@@ -28,6 +30,7 @@ def load_teams(path):
                 "name": team["name"],
                 "host": team["host"],
                 "ports": ports,
+                "services": services,
                 "npc": bool(team.get("npc")),
             }
         )
@@ -64,13 +67,16 @@ def send_payload(host, port, payload, timeout=5.0):
 
 
 def replay(payload, targets, mode="verbatim", flag_pattern=None, timeout=5.0,
-           log_fn=print):
+           log_fn=print, service=None):
     """Replay to every target. mode: verbatim | template.
 
+    service — имя сервиса детекта (из game.services): шлём только на
+    одноимённый порт цели, если он задан в teams.yaml (services:), иначе
+    на все порты цели (как раньше).
+
     In template mode the payload is generalized once (flag/uuid/token -> {FLAG}
-    etc.) and rendered per target with the previous values removed (the exploit
-    reads a fresh flag on each target, so placeholders are mostly stripped to
-    their literal braces unless caller supplies overrides).
+    etc.); rendered per target with overrides (placeholders without an
+    override stay literal).
     Returns list of {target, port, response_len, flags, error}.
     """
     if mode == "template":
@@ -107,7 +113,10 @@ def replay(payload, targets, mode="verbatim", flag_pattern=None, timeout=5.0,
 
     threads = []
     for target in targets:
-        for port in target["ports"]:
+        ports = target["ports"]
+        if service and target.get("services", {}).get(service):
+            ports = [target["services"][service]]
+        for port in ports:
             th = threading.Thread(target=worker, args=(target, port))
             th.start()
             threads.append(th)
